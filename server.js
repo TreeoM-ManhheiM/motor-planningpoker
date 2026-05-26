@@ -22,8 +22,14 @@ io.on('connection', (socket) => {
         
         salas[sala].jogadores = salas[sala].jogadores.filter(j => j.id !== socket.id);
         
-        // Adicionado o estado 'prontoParaRevelar' para cada jogador
-        salas[sala].jogadores.push({ id: socket.id, nome: apelido, voto: null, prontoParaRevelar: false });
+        // Adicionado: 'prontoParaReiniciar'
+        salas[sala].jogadores.push({ 
+            id: socket.id, 
+            nome: apelido, 
+            voto: null, 
+            prontoParaRevelar: false,
+            prontoParaReiniciar: false 
+        });
         
         io.to(sala).emit('atualizarSala', salas[sala]);
     });
@@ -37,13 +43,12 @@ io.on('connection', (socket) => {
         let jogador = sala.jogadores.find(j => j.id === socket.id);
         if (jogador) {
             jogador.voto = (jogador.voto === voto) ? null : voto;
-            // Se ele mudar o voto, desmarca a prontidão de revelar por segurança
             jogador.prontoParaRevelar = false; 
             io.to(minhaSala).emit('atualizarSala', sala);
         }
     });
 
-    // 3. Jogador clica em Revelar Votos (Nova Regra)
+    // 3. Jogador clica em Revelar Votos
     socket.on('revelarVotos', () => {
         if (!minhaSala || !salas[minhaSala]) return;
         let sala = salas[minhaSala];
@@ -54,11 +59,9 @@ io.on('connection', (socket) => {
             jogador.prontoParaRevelar = true;
         }
 
-        // Verifica se TODOS os jogadores da sala clicaram em revelar
         let todosProntos = sala.jogadores.every(j => j.prontoParaRevelar === true);
 
         if (todosProntos) {
-            // Se TODOS clicaram, revela geral!
             sala.revelado = true;
             
             let votosValidos = sala.jogadores
@@ -76,25 +79,45 @@ io.on('connection', (socket) => {
                 stats.consenso = votosValidos.every(v => v === primeiroVoto);
             }
 
+            // Opcional: quando revela, garante que ninguém está "pronto para reiniciar" ainda
+            sala.jogadores.forEach(j => j.prontoParaReiniciar = false);
+
             io.to(minhaSala).emit('votosRevelados', { sala, stats });
         } else {
-            // Se nem todos clicaram, apenas atualiza a mesa para mostrar quem já pediu para revelar
             io.to(minhaSala).emit('atualizarSala', sala);
         }
     });
 
-    // 4. Nova Rodada (Reinicia os estados)
+    // 4. Jogador clica em Nova Rodada (Regra de Consenso Aplicada)
     socket.on('reiniciarRodada', () => {
         if (!minhaSala || !salas[minhaSala]) return;
         let sala = salas[minhaSala];
-        sala.revelado = false;
         
-        sala.jogadores.forEach(j => {
-            j.voto = null;
-            j.prontoParaRevelar = false;
-        });
-        
-        io.to(minhaSala).emit('rodadaReiniciada', sala);
+        // Só faz sentido pedir para reiniciar se a mesa já estiver revelada
+        if (!sala.revelado) return;
+
+        let jogador = sala.jogadores.find(j => j.id === socket.id);
+        if (jogador) {
+            jogador.prontoParaReiniciar = true;
+        }
+
+        // Verifica se TODOS clicaram em "Nova Rodada"
+        let todosQueremReiniciar = sala.jogadores.every(j => j.prontoParaReiniciar === true);
+
+        if (todosQueremReiniciar) {
+            sala.revelado = false;
+            
+            sala.jogadores.forEach(j => {
+                j.voto = null;
+                j.prontoParaRevelar = false;
+                j.prontoParaReiniciar = false; // Zera para a próxima
+            });
+            
+            io.to(minhaSala).emit('rodadaReiniciada', sala);
+        } else {
+            // Se nem todos clicaram, apenas atualiza a tela para mostrar o status
+            io.to(minhaSala).emit('atualizarSala', sala);
+        }
     });
 
     socket.on('disconnect', () => {
