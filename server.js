@@ -1,203 +1,113 @@
-<!DOCTYPE html>
-<html lang="pt-BR">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Planning Poker Lógico</title>
-  <style>
-    body {
-      margin: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-      background: #0f172a; color: white; text-align: center;
-    }
-    #lobby, #painel-poker { max-width: 900px; margin: auto; padding: 20px; }
-    
-    .mesa-votos {
-      display: flex; flex-wrap: wrap; justify-content: center; gap: 20px;
-      background: #1e293b; padding: 30px; border-radius: 15px;
-      min-height: 150px; margin: 20px 0; border: 2px dashed #475569;
-    }
-    
-    .carta {
-      width: 70px; height: 110px; background: #f8fafc; color: #1e293b;
-      border-radius: 10px; font-weight: bold; font-size: 24px;
-      display: flex; align-items: center; justify-content: center;
-      box-shadow: 0 4px 10px rgba(0,0,0,0.3); user-select: none; transition: all 0.2s;
-    }
-    
-    .carta.oculta {
-      background: linear-gradient(135deg, #3b82f6, #1d4ed8);
-      color: white; border: 3px solid #ffffff;
-    }
-    .carta.oculta::after { content: "❓"; font-size: 20px; }
+const express = require('express');
+const http = require('http');
+const { Server } = require('socket.io');
 
-    .meu-baralho { display: flex; justify-content: center; gap: 10px; flex-wrap: wrap; margin-top: 30px; }
-    .meu-baralho .carta { cursor: pointer; }
-    .meu-baralho .carta:hover { transform: translateY(-10px); background: #e2e8f0; }
-    .meu-baralho .carta.selecionada {
-      background: #fbbf24; color: #1e293b; transform: translateY(-15px);
-      box-shadow: 0 0 15px #fbbf24;
-    }
+const app = express();
+const server = http.createServer(app);
+const io = new Server(server, { cors: { origin: "*" } });
 
-    .status-voto { font-size: 14px; margin-top: 8px; color: #94a3b8; font-weight: bold; }
-    .player-card { display: flex; flex-direction: column; align-items: center; }
+let salas = {};
 
-    button {
-      background: #3b82f6; color: white; border: none; padding: 12px 24px;
-      border-radius: 8px; cursor: pointer; font-weight: bold; font-size: 16px; margin: 5px;
-    }
-    button:hover { background: #2563eb; }
-    .btn-revelar { background: #10b981; }
-    .btn-revelar:hover { background: #059669; }
-    .btn-reset { background: #ef4444; }
-    .btn-reset:hover { background: #dc2626; }
+io.on('connection', (socket) => {
+    let minhaSala = null;
 
-    #estatisticas {
-      background: rgba(16, 185, 129, 0.15); border: 2px solid #10b981;
-      padding: 15px; border-radius: 10px; display: none; font-size: 18px; margin: 15px 0;
-    }
-    input { padding: 12px; border-radius: 8px; border: none; margin: 5px; width: 200px; font-size: 16px; }
-  </style>
-</head>
-<body>
-
-  <div id="lobby">
-    <h1 style="color: #60a5fa; font-size: 36px;">Planning Poker Lógico 🃏</h1>
-    <p>O professor lerá o desafio. Votem e cliquem em revelar quando estiverem prontos!</p>
-    <br>
-    <input type="text" id="nick" placeholder="Seu Nome/Apelido">
-    <input type="text" id="sala" placeholder="Nome da Sala (ex: Squad-A)">
-    <br><br>
-    <button onclick="entrar()">ENTRAR NA SALA</button>
-  </div>
-
-  <div id="painel-poker" style="display: none;">
-    <h2 id="titulo-sala" style="color: #60a5fa; margin-bottom: 5px;">Sala: -</h2>
-    <p id="instrucao" style="color: #94a3b8; margin-top: 0;">Escolha uma carta e depois clique em "Revelar Votos".</p>
-
-    <div>
-      <button class="btn-revelar" onclick="socket.emit('revelarVotos')">👁️ Revelar Votos</button>
-      <button class="btn-reset" onclick="socket.emit('reiniciarRodada')">🔄 Nova Rodada</button>
-    </div>
-
-    <div id="estatisticas"></div>
-
-    <h3>Mesa de Estimativas</h3>
-    <div class="mesa-votos" id="mesa"></div>
-
-    <h3>Seu Baralho (Fibonacci)</h3>
-    <div class="meu-baralho" id="meu-baralho"></div>
-  </div>
-
-  <script src="https://cdn.socket.io/4.8.3/socket.io.min.js"></script>
-  <script>
-    const socket = io("https://motor-planningpoker.onrender.com", {
-      transports: ["polling"],
-      upgrade: true
+    // 1. Jogador entra na sala
+    socket.on('entrarSala', ({ apelido, sala }) => {
+        socket.join(sala);
+        minhaSala = sala;
+        
+        if (!salas[sala]) {
+            salas[sala] = { jogadores: [], revelado: false };
+        }
+        
+        salas[sala].jogadores = salas[sala].jogadores.filter(j => j.id !== socket.id);
+        
+        // Adicionado o estado 'prontoParaRevelar' para cada jogador
+        salas[sala].jogadores.push({ id: socket.id, nome: apelido, voto: null, prontoParaRevelar: false });
+        
+        io.to(sala).emit('atualizarSala', salas[sala]);
     });
 
-    const cartasFibonacci = ['0', '1', '2', '3', '5', '8', '13', '21', '34', '?', '☕'];
-    let meuVoto = null;
-    let salaRevelada = false;
+    // 2. Jogador escolhe uma carta
+    socket.on('votar', (voto) => {
+        if (!minhaSala || !salas[minhaSala]) return;
+        let sala = salas[minhaSala];
+        if (sala.revelado) return;
 
-    function entrar() {
-      const apelido = document.getElementById('nick').value;
-      const sala = document.getElementById('sala').value || "Geral";
-      if (!apelido) return alert("Por favor, digite seu nome!");
+        let jogador = sala.jogadores.find(j => j.id === socket.id);
+        if (jogador) {
+            jogador.voto = (jogador.voto === voto) ? null : voto;
+            // Se ele mudar o voto, desmarca a prontidão de revelar por segurança
+            jogador.prontoParaRevelar = false; 
+            io.to(minhaSala).emit('atualizarSala', sala);
+        }
+    });
 
-      socket.emit('entrarSala', { apelido, sala });
-      
-      document.getElementById('lobby').style.display = 'none';
-      document.getElementById('painel-poker').style.display = 'block';
-      document.getElementById('titulo-sala').innerText = `Sala: ${sala}`;
-      
-      gerarMeuBaralho();
-    }
+    // 3. Jogador clica em Revelar Votos (Nova Regra)
+    socket.on('revelarVotos', () => {
+        if (!minhaSala || !salas[minhaSala]) return;
+        let sala = salas[minhaSala];
+        if (sala.revelado) return;
 
-    function gerarMeuBaralho() {
-      const container = document.getElementById('meu-baralho');
-      container.innerHTML = cartasFibonacci.map(v => `
-        <div class="carta" id="my-card-${v}" onclick="votar('${v}')">${v}</div>
-      `).join('');
-    }
-
-    function votar(valor) {
-      if (salaRevelada) return alert("A rodada acabou! Inicie uma nova rodada para votar de novo.");
-      
-      const cartas = document.querySelectorAll('.meu-baralho .carta');
-      cartas.forEach(c => c.classList.remove('selecionada'));
-
-      if (meuVoto === valor) {
-        meuVoto = null; 
-      } else {
-        meuVoto = valor;
-        document.getElementById(`my-card-${valor}`).classList.add('selecionada');
-      }
-
-      socket.emit('votar', valor);
-    }
-
-    function renderizarMesa(sala) {
-      salaRevelada = sala.revelado;
-      const mesa = document.getElementById('mesa');
-      
-      mesa.innerHTML = sala.jogadores.map(j => {
-        let classeCarta = "carta";
-        let conteudoCarta = j.voto || "";
-        let statusTexto = j.voto ? '✅ Votou' : '⏳ Pensando...';
-        let corStatus = j.voto ? '#10b981' : '#94a3b8';
-
-        if (j.voto && !sala.revelado) {
-          classeCarta = "carta oculta";
-          conteudoCarta = "";
-        } else if (!j.voto) {
-          classeCarta = "carta";
-          conteudoCarta = "💤"; 
+        let jogador = sala.jogadores.find(j => j.id === socket.id);
+        if (jogador) {
+            jogador.prontoParaRevelar = true;
         }
 
-        // Se o jogador clicou em revelar mas a mesa ainda não abriu geral
-        if (j.prontoParaRevelar && !sala.revelado) {
-            statusTexto = '👁️ Quer Revelar';
-            corStatus = '#6366f1';
+        // Verifica se TODOS os jogadores da sala clicaram em revelar
+        let todosProntos = sala.jogadores.every(j => j.prontoParaRevelar === true);
+
+        if (todosProntos) {
+            // Se TODOS clicaram, revela geral!
+            sala.revelado = true;
+            
+            let votosValidos = sala.jogadores
+                .map(j => j.voto)
+                .filter(v => v !== null && v !== '?' && v !== '☕')
+                .map(Number);
+                
+            let stats = { media: 0, consenso: false };
+            
+            if (votosValidos.length > 0) {
+                let soma = votosValidos.reduce((a, b) => a + b, 0);
+                stats.media = (soma / votosValidos.length).toFixed(1);
+                
+                let primeiroVoto = votosValidos[0];
+                stats.consenso = votosValidos.every(v => v === primeiroVoto);
+            }
+
+            io.to(minhaSala).emit('votosRevelados', { sala, stats });
+        } else {
+            // Se nem todos clicaram, apenas atualiza a mesa para mostrar quem já pediu para revelar
+            io.to(minhaSala).emit('atualizarSala', sala);
         }
-
-        return `
-          <div class="player-card">
-            <div class="${classeCarta}">${conteudoCarta}</div>
-            <div style="font-weight: bold; margin-top: 10px;">${j.nome}</div>
-            <div class="status-voto" style="color: ${corStatus};">${statusTexto}</div>
-          </div>
-        `;
-      }).join('');
-    }
-
-    socket.on('atualizarSala', (sala) => {
-      document.getElementById('estatisticas').style.display = 'none';
-      renderizarMesa(sala);
     });
 
-    socket.on('votosRevelados', ({ sala, stats }) => {
-      renderizarMesa(sala);
-      
-      const painelStats = document.getElementById('estatisticas');
-      painelStats.style.display = 'block';
-      
-      if (stats.consenso) {
-        painelStats.innerHTML = `🎉 <strong>Consenso Atingido!</strong> Todos votaram igual! Estimativa: <strong>${stats.media}</strong>`;
-        painelStats.style.borderColor = "#10b981";
-        painelStats.style.background = "rgba(16, 185, 129, 0.15)";
-      } else {
-        painelStats.innerHTML = `📊 Votos revelados! Média calculada: <strong>${stats.media}</strong> pontos. <br> <small>Discutam as diferenças antes de reiniciar!</small>`;
-        painelStats.style.borderColor = "#fbbf24";
-        painelStats.style.background = "rgba(251, 191, 36, 0.15)";
-      }
+    // 4. Nova Rodada (Reinicia os estados)
+    socket.on('reiniciarRodada', () => {
+        if (!minhaSala || !salas[minhaSala]) return;
+        let sala = salas[minhaSala];
+        sala.revelado = false;
+        
+        sala.jogadores.forEach(j => {
+            j.voto = null;
+            j.prontoParaRevelar = false;
+        });
+        
+        io.to(minhaSala).emit('rodadaReiniciada', sala);
     });
 
-    socket.on('rodadaReiniciada', (sala) => {
-      meuVoto = null;
-      document.getElementById('estatisticas').style.display = 'none';
-      gerarMeuBaralho(); 
-      renderizarMesa(sala);
+    socket.on('disconnect', () => {
+        if (minhaSala && salas[minhaSala]) {
+            salas[minhaSala].jogadores = salas[minhaSala].jogadores.filter(j => j.id !== socket.id);
+            if (salas[minhaSala].jogadores.length === 0) {
+                delete salas[minhaSala];
+            } else {
+                io.to(minhaSala).emit('atualizarSala', salas[minhaSala]);
+            }
+        }
     });
-  </script>
-</body>
-</html>
+});
+
+const PORT = process.env.PORT || 3000;
+server.listen(PORT, () => console.log(`Servidor rodando na porta ${PORT}`));
