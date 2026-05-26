@@ -16,20 +16,23 @@ io.on('connection', (socket) => {
         socket.join(sala);
         minhaSala = sala;
         
+        // Se a sala não existir, cria e define este primeiro jogador como MODERADOR/LÍDER
         if (!salas[sala]) {
-            salas[sala] = { jogadores: [], revelado: false };
+            salas[sala] = { 
+                jogadores: [], 
+                moderador: socket.id, // ID do criador da sala
+                revelado: false 
+            };
         }
         
         salas[sala].jogadores = salas[sala].jogadores.filter(j => j.id !== socket.id);
         
-        // Adicionado: 'prontoParaReiniciar'
-        salas[sala].jogadores.push({ 
-            id: socket.id, 
-            nome: apelido, 
-            voto: null, 
-            prontoParaRevelar: false,
-            prontoParaReiniciar: false 
-        });
+        // Se por algum motivo a sala ficou sem moderador, assume o controle
+        if (!salas[sala].moderador) {
+            salas[sala].moderador = socket.id;
+        }
+        
+        salas[sala].jogadores.push({ id: socket.id, nome: apelido, voto: null });
         
         io.to(sala).emit('atualizarSala', salas[sala]);
     });
@@ -43,90 +46,84 @@ io.on('connection', (socket) => {
         let jogador = sala.jogadores.find(j => j.id === socket.id);
         if (jogador) {
             jogador.voto = (jogador.voto === voto) ? null : voto;
-            jogador.prontoParaRevelar = false; 
             io.to(minhaSala).emit('atualizarSala', sala);
         }
     });
 
-    // 3. Jogador clica em Revelar Votos
+    // 3. APENAS MODERADOR: Revelar Votos
     socket.on('revelarVotos', () => {
         if (!minhaSala || !salas[minhaSala]) return;
         let sala = salas[minhaSala];
-        if (sala.revelado) return;
+        
+        // Bloqueio de segurança: Só o moderador pode revelar
+        if (sala.moderador !== socket.id) return;
 
-        let jogador = sala.jogadores.find(j => j.id === socket.id);
-        if (jogador) {
-            jogador.prontoParaRevelar = true;
+        sala.revelado = true;
+        
+        let votosValidos = sala.jogadores
+            .map(j => j.voto)
+            .filter(v => v !== null && v !== '?' && v !== '☕')
+            .map(Number);
+            
+        let stats = { media: 0, consenso: false };
+        
+        if (votosValidos.length > 0) {
+            let soma = votosValidos.reduce((a, b) => a + b, 0);
+            stats.media = (soma / votosValidos.length).toFixed(1);
+            
+            let primeiroVoto = votosValidos[0];
+            stats.consenso = votosValidos.every(v => v === primeiroVoto);
         }
 
-        let todosProntos = sala.jogadores.every(j => j.prontoParaRevelar === true);
-
-        if (todosProntos) {
-            sala.revelado = true;
-            
-            let votosValidos = sala.jogadores
-                .map(j => j.voto)
-                .filter(v => v !== null && v !== '?' && v !== '☕')
-                .map(Number);
-                
-            let stats = { media: 0, consenso: false };
-            
-            if (votosValidos.length > 0) {
-                let soma = votosValidos.reduce((a, b) => a + b, 0);
-                stats.media = (soma / votosValidos.length).toFixed(1);
-                
-                let primeiroVoto = votosValidos[0];
-                stats.consenso = votosValidos.every(v => v === primeiroVoto);
-            }
-
-            // Opcional: quando revela, garante que ninguém está "pronto para reiniciar" ainda
-            sala.jogadores.forEach(j => j.prontoParaReiniciar = false);
-
-            io.to(minhaSala).emit('votosRevelados', { sala, stats });
-        } else {
-            io.to(minhaSala).emit('atualizarSala', sala);
-        }
+        io.to(minhaSala).emit('votosRevelados', { sala, stats });
     });
 
-    // 4. Jogador clica em Nova Rodada (Regra de Consenso Aplicada)
+    // 4. APENAS MODERADOR: Nova Rodada
     socket.on('reiniciarRodada', () => {
         if (!minhaSala || !salas[minhaSala]) return;
         let sala = salas[minhaSala];
         
-        // Só faz sentido pedir para reiniciar se a mesa já estiver revelada
-        if (!sala.revelado) return;
+        // Bloqueio de segurança: Só o moderador pode reiniciar
+        if (sala.moderador !== socket.id) return;
 
-        let jogador = sala.jogadores.find(j => j.id === socket.id);
-        if (jogador) {
-            jogador.prontoParaReiniciar = true;
-        }
-
-        // Verifica se TODOS clicaram em "Nova Rodada"
-        let todosQueremReiniciar = sala.jogadores.every(j => j.prontoParaReiniciar === true);
-
-        if (todosQueremReiniciar) {
-            sala.revelado = false;
-            
-            sala.jogadores.forEach(j => {
-                j.voto = null;
-                j.prontoParaRevelar = false;
-                j.prontoParaReiniciar = false; // Zera para a próxima
-            });
-            
-            io.to(minhaSala).emit('rodadaReiniciada', sala);
-        } else {
-            // Se nem todos clicaram, apenas atualiza a tela para mostrar o status
-            io.to(minhaSala).emit('atualizarSala', sala);
-        }
+        sala.revelado = false;
+        sala.jogadores.forEach(j => j.voto = null);
+        
+        io.to(minhaSala).emit('rodadaReiniciada', sala);
     });
 
+    // 5. APENAS MODERADOR: Chutar Jogador Fantasma
+    socket.on('chutarJogador', (idAlvo) => {
+        if (!minhaSala || !salas[minhaSala]) return;
+        let sala = salas[minhaSala];
+        
+        // Segurança: só o moderador pode chutar alguém
+        if (sala.moderador !== socket.id) return;
+
+        // Avisa especificamente o jogador alvo que ele foi expulso
+        io.to(idAlvo).emit('voceFoiChutado');
+
+        // Remove o jogador da lista da sala
+        sala.jogadores = sala.jogadores.filter(j => j.id !== idAlvo);
+
+        // Se o jogador expulso era o próprio canal ativo (improvável), limpa
+        io.to(minhaSala).emit('atualizarSala', sala);
+    });
+
+    // 6. Desconexão natural (fechar aba)
     socket.on('disconnect', () => {
         if (minhaSala && salas[minhaSala]) {
-            salas[minhaSala].jogadores = salas[minhaSala].jogadores.filter(j => j.id !== socket.id);
-            if (salas[minhaSala].jogadores.length === 0) {
+            let sala = salas[minhaSala];
+            sala.jogadores = sala.jogadores.filter(j => j.id !== socket.id);
+            
+            if (sala.jogadores.length === 0) {
                 delete salas[minhaSala];
             } else {
-                io.to(minhaSala).emit('atualizarSala', salas[minhaSala]);
+                // Se o moderador sair, passa a coroa automaticamente para o próximo da fila
+                if (sala.moderador === socket.id) {
+                    sala.moderador = sala.jogadores[0].id;
+                }
+                io.to(minhaSala).emit('atualizarSala', sala);
             }
         }
     });
