@@ -16,18 +16,16 @@ io.on('connection', (socket) => {
         socket.join(sala);
         minhaSala = sala;
         
-        // Se a sala não existir, cria e define este primeiro jogador como MODERADOR/LÍDER
         if (!salas[sala]) {
             salas[sala] = { 
                 jogadores: [], 
-                moderador: socket.id, // ID do criador da sala
+                moderador: socket.id, 
                 revelado: false 
             };
         }
         
         salas[sala].jogadores = salas[sala].jogadores.filter(j => j.id !== socket.id);
         
-        // Se por algum motivo a sala ficou sem moderador, assume o controle
         if (!salas[sala].moderador) {
             salas[sala].moderador = socket.id;
         }
@@ -50,29 +48,44 @@ io.on('connection', (socket) => {
         }
     });
 
-    // 3. APENAS MODERADOR: Revelar Votos
+    // 3. APENAS MODERADOR: Revelar Votos com Cálculo de Extremos Pedagógicos
     socket.on('revelarVotos', () => {
         if (!minhaSala || !salas[minhaSala]) return;
         let sala = salas[minhaSala];
         
-        // Bloqueio de segurança: Só o moderador pode revelar
         if (sala.moderador !== socket.id) return;
 
         sala.revelado = true;
         
-        let votosValidos = sala.jogadores
-            .map(j => j.voto)
-            .filter(v => v !== null && v !== '?' && v !== '☕')
-            .map(Number);
+        // Filtra apenas os votos que são números para não quebrar o cálculo com '?' ou '☕'
+        let jogadoresComVotoNumerico = sala.jogadores.filter(j => j.voto !== null && j.voto !== '?' && j.voto !== '☕');
+        let votosValidos = jogadoresComVotoNumerico.map(j => Number(j.voto));
             
-        let stats = { media: 0, consenso: false };
+        let stats = { 
+            media: 0, 
+            consenso: false,
+            menorVoto: null,
+            maiorVoto: null,
+            jogadoresMenor: [],
+            jogadoresMaior: []
+        };
         
         if (votosValidos.length > 0) {
             let soma = votosValidos.reduce((a, b) => a + b, 0);
             stats.media = (soma / votosValidos.length).toFixed(1);
             
-            let primeiroVoto = votosValidos[0];
-            stats.consenso = votosValidos.every(v => v === primeiroVoto);
+            let min = Math.min(...votosValidos);
+            let max = Math.max(...votosValidos);
+            
+            stats.menorVoto = min;
+            stats.maiorVoto = max;
+            stats.consenso = (min === max);
+
+            // Se não houver consenso, mapeia quem são os donos das maiores e menores notas
+            if (!stats.consenso) {
+                stats.jogadoresMenor = jogadoresComVotoNumerico.filter(j => Number(j.voto) === min).map(j => j.nome);
+                stats.jogadoresMaior = jogadoresComVotoNumerico.filter(j => Number(j.voto) === max).map(j => j.nome);
+            }
         }
 
         io.to(minhaSala).emit('votosRevelados', { sala, stats });
@@ -83,7 +96,6 @@ io.on('connection', (socket) => {
         if (!minhaSala || !salas[minhaSala]) return;
         let sala = salas[minhaSala];
         
-        // Bloqueio de segurança: Só o moderador pode reiniciar
         if (sala.moderador !== socket.id) return;
 
         sala.revelado = false;
@@ -92,25 +104,18 @@ io.on('connection', (socket) => {
         io.to(minhaSala).emit('rodadaReiniciada', sala);
     });
 
-    // 5. APENAS MODERADOR: Chutar Jogador Fantasma
+    // 5. APENAS MODERADOR: Chutar Jogador
     socket.on('chutarJogador', (idAlvo) => {
         if (!minhaSala || !salas[minhaSala]) return;
         let sala = salas[minhaSala];
         
-        // Segurança: só o moderador pode chutar alguém
         if (sala.moderador !== socket.id) return;
 
-        // Avisa especificamente o jogador alvo que ele foi expulso
         io.to(idAlvo).emit('voceFoiChutado');
-
-        // Remove o jogador da lista da sala
         sala.jogadores = sala.jogadores.filter(j => j.id !== idAlvo);
-
-        // Se o jogador expulso era o próprio canal ativo (improvável), limpa
         io.to(minhaSala).emit('atualizarSala', sala);
     });
 
-    // 6. Desconexão natural (fechar aba)
     socket.on('disconnect', () => {
         if (minhaSala && salas[minhaSala]) {
             let sala = salas[minhaSala];
@@ -119,7 +124,6 @@ io.on('connection', (socket) => {
             if (sala.jogadores.length === 0) {
                 delete salas[minhaSala];
             } else {
-                // Se o moderador sair, passa a coroa automaticamente para o próximo da fila
                 if (sala.moderador === socket.id) {
                     sala.moderador = sala.jogadores[0].id;
                 }
